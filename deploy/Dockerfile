@@ -15,7 +15,7 @@
 # Builds the static Go image to execute in a Kubernetes job
 
 FROM golang:1.10-alpine
-RUN apk add bash make
+RUN apk add bash make git
 WORKDIR /go/src/github.com/GoogleContainerTools/kaniko
 COPY . .
 RUN make
