@@ -14,7 +14,7 @@
 
 # Builds the static Go image to execute in a Kubernetes job
 
-FROM golang:1.10
+FROM golang:1.10-alpine
 WORKDIR /go/src/github.com/GoogleContainerTools/kaniko
 COPY . .
 RUN make
@@ -25,8 +25,7 @@ RUN tar -C /usr/local/bin/ -xvzf /usr/local/bin/docker-credential-gcr_linux_amd6
 RUN go get -u github.com/awslabs/amazon-ecr-credential-helper/ecr-login/cli/docker-credential-ecr-login
 RUN make -C /go/src/github.com/awslabs/amazon-ecr-credential-helper linux-amd64
 
-FROM alpine
-RUN apk add bash
+FROM scratch
 COPY --from=0 /go/src/github.com/GoogleContainerTools/kaniko/out/executor /kaniko/executor
 COPY --from=0 /usr/local/bin/docker-credential-gcr /kaniko/docker-credential-gcr
 COPY --from=0 /go/src/github.com/awslabs/amazon-ecr-credential-helper/bin/linux-amd64/docker-credential-ecr-login /kaniko/docker-credential-ecr-login
@@ -40,4 +39,4 @@ ENV DOCKER_CONFIG /kaniko/.docker/
 ENV DOCKER_CREDENTIAL_GCR_CONFIG /kaniko/.config/gcloud/docker_credential_gcr_config.json
 WORKDIR /workspace
 RUN ["docker-credential-gcr", "config", "--token-source=env"]
-ENTRYPOINT ["/bin/bash", "-c"]
+ENTRYPOINT ["/bin/ash", "-c"]
