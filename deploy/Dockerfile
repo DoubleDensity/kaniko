@@ -26,7 +26,7 @@ RUN go get -u github.com/awslabs/amazon-ecr-credential-helper/ecr-login/cli/dock
 RUN make -C /go/src/github.com/awslabs/amazon-ecr-credential-helper linux-amd64
 
 FROM alpine:latest
-RUN apk --no-cache add coreutils bash
+RUN apk --no-cache add coreutils bash rsync
 ADD https://dl.minio.io/client/mc/release/linux-amd64/mc /usr/bin/mc
 RUN chmod +x /usr/bin/mc
 COPY --from=0 /go/src/github.com/GoogleContainerTools/kaniko/out/executor /kaniko/executor
