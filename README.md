@@ -40,6 +40,7 @@ _If you are interested in contributing to kaniko, see [DEVELOPMENT.md](DEVELOPME
     - [--cache-dir](#--cache-dir)
     - [--cache-repo](#--cache-repo)
     - [--cleanup](#--cleanup)
+    - [--digest-file](#--digest-file)
     - [--insecure](#--insecure)
     - [--insecure-pull](#--insecure-pull)
     - [--no-push](#--no-push)
@@ -50,6 +51,7 @@ _If you are interested in contributing to kaniko, see [DEVELOPMENT.md](DEVELOPME
     - [--skip-tls-verify-pull](#--skip-tls-verify-pull)
     - [--target](#--target)
     - [--tarPath](#--tarpath)
+    - [--verbosity](#--verbosity)
   - [Debug Image](#debug-image)
 - [Security](#security)
 - [Comparison with Other Tools](#comparison-with-other-tools)
@@ -355,9 +357,35 @@ If `--destination=gcr.io/kaniko-project/test`, then cached layers will be stored
 
 _This flag must be used in conjunction with the `--cache=true` flag._
 
+
+#### --digest-file
+
+Set this flag to specify a file in the container. This file will
+receive the digest of a built image. This can be used to
+automatically track the exact image built by Kaniko.
+
+For example, setting the flag to `--digest-file=/dev/termination-log`
+will write the digest to that file, which is picked up by
+Kubernetes automatically as the `{{.state.terminated.message}}`
+of the container.
+
+#### --insecure-registry
+
+Set this flag to use plain HTTP requests when accessing a registry. It is supposed to be used for testing purposes only and should not be used in production!
+You can set it multiple times for multiple registries.
+
+#### --skip-tls-verify-registry
+
+Set this flag to skip TLS cerificate validation when accessing a registry. It is supposed to be used for testing purposes only and should not be used in production!
+You can set it multiple times for multiple registries.
+
 #### --cleanup
 
 Set this flag to clean the filesystem at the end of the build.
+
+#### --insecure
+
+Set this flag if you want to push images to a plain HTTP registry. It is supposed to be used for testing purposes only and should not be used in production!
 
 #### --insecure-pull
 
@@ -377,7 +405,11 @@ This flag takes a single snapshot of the filesystem at the end of the build, so 
 
 #### --skip-tls-verify
 
-Set this flag to skip TLS certificate validation when connecting to a registry. It is supposed to be used for testing purposes only and should not be used in production!
+Set this flag to skip TLS certificate validation when pushing to a registry. It is supposed to be used for testing purposes only and should not be used in production!
+
+#### --skip-tls-verify-pull
+
+Set this flag to skip TLS certificate validation when pulling from a registry. It is supposed to be used for testing purposes only and should not be used in production!
 
 #### --snapshotMode
 
@@ -392,6 +424,10 @@ Set this flag to indicate which build stage is the target build stage.
 #### --tarPath
 
 Set this flag as `--tarPath=<path>` to save the image as a tarball at path instead of pushing the image.
+
+#### --verbosity
+
+Set this flag as `--verbosity=<panic|fatal|error|warn|info|debug>` to set the logging level. Defaults to `info`.
 
 ### Debug Image
 
@@ -427,19 +463,20 @@ You may be able to achieve the same default seccomp profile that Docker uses in 
 
 Similar tools include:
 
+- [BuildKit](https://github.com/moby/buildkit)
 - [img](https://github.com/genuinetools/img)
 - [orca-build](https://github.com/cyphar/orca-build)
 - [umoci](https://github.com/openSUSE/umoci)
-- [buildah](https://github.com/projectatomic/buildah)
+- [buildah](https://github.com/containers/buildah)
 - [FTL](https://github.com/GoogleCloudPlatform/runtimes-common/tree/master/ftl)
 - [Bazel rules_docker](https://github.com/bazelbuild/rules_docker)
 
 All of these tools build container images with different approaches.
 
-`img` can perform as a non root user from within a container, but requires that
-the `img` container has `RawProc` access to create nested containers.  `kaniko`
-does not actually create nested containers, so it does not require `RawProc`
-access.
+BuildKit (and `img`) can perform as a non root user from within a container, but requires
+seccomp and AppArmor to be disabled to create nested containers.  `kaniko`
+does not actually create nested containers, so it does not require seccomp and AppArmor
+to be disabled.
 
 `orca-build` depends on `runc` to build images from Dockerfiles, which can not
 run inside a container (for similar reasons to `img` above). `kaniko` doesn't
@@ -453,8 +490,15 @@ filesystem is sufficiently complicated). However it has no `Dockerfile`-like
 build tooling (it's a slightly lower-level tool that can be used to build such
 builders -- such as `orca-build`).
 
-`buildah` requires the same privileges as a Docker daemon does to run, while
-`kaniko` runs without any special privileges or permissions.
+`Buildah` specializes in building OCI images.  Buildah's commands replicate all
+of the commands that are found in a Dockerfile.  This allows building images
+with and without Dockerfiles while not requiring any root privileges.
+Buildah’s ultimate goal is to provide a lower-level coreutils interface to
+build images.  The flexibility of building images without Dockerfiles allows
+for the integration of other scripting languages into the build process.
+Buildah follows a simple fork-exec model and does not run as a daemon
+but it is based on a comprehensive API in golang, which can be vendored
+into other tools.
 
 `FTL` and `Bazel` aim to achieve the fastest possible creation of Docker images
 for a subset of images.  These can be thought of as a special-case "fast path"

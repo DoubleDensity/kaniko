@@ -19,15 +19,16 @@ package executor
 import (
 	"crypto/tls"
 	"fmt"
+	"io/ioutil"
 	"net/http"
 	"time"
 
 	"github.com/GoogleContainerTools/kaniko/pkg/cache"
 	"github.com/GoogleContainerTools/kaniko/pkg/config"
 	"github.com/GoogleContainerTools/kaniko/pkg/constants"
+	"github.com/GoogleContainerTools/kaniko/pkg/creds"
+	"github.com/GoogleContainerTools/kaniko/pkg/timing"
 	"github.com/GoogleContainerTools/kaniko/pkg/version"
-	"github.com/google/go-containerregistry/pkg/authn"
-	"github.com/google/go-containerregistry/pkg/authn/k8schain"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
@@ -47,12 +48,46 @@ func (w *withUserAgent) RoundTrip(r *http.Request) (*http.Response, error) {
 	return w.t.RoundTrip(r)
 }
 
-// DoPush is responsible for pushing image to the destinations specified in opts
-func DoPush(image v1.Image, opts *config.KanikoOptions) error {
+// CheckPushPermissionos checks that the configured credentials can be used to
+// push to every specified destination.
+func CheckPushPermissions(opts *config.KanikoOptions) error {
 	if opts.NoPush {
-		logrus.Info("Skipping push to container registry due to --no-push flag")
 		return nil
 	}
+
+	checked := map[string]bool{}
+	for _, destination := range opts.Destinations {
+		destRef, err := name.NewTag(destination, name.WeakValidation)
+		if err != nil {
+			return errors.Wrap(err, "getting tag for destination")
+		}
+		if checked[destRef.Context().RepositoryStr()] {
+			continue
+		}
+		if err := remote.CheckPushPermission(destRef, creds.GetKeychain(), http.DefaultTransport); err != nil {
+			return errors.Wrapf(err, "checking push permission for %q", destRef)
+		}
+		checked[destRef.Context().RepositoryStr()] = true
+	}
+	return nil
+}
+
+// DoPush is responsible for pushing image to the destinations specified in opts
+func DoPush(image v1.Image, opts *config.KanikoOptions) error {
+	t := timing.Start("Total Push Time")
+
+	if opts.DigestFile != "" {
+		digest, err := image.Digest()
+		if err != nil {
+			return errors.Wrap(err, "error fetching digest")
+		}
+		digestByteArray := []byte(digest.String())
+		err = ioutil.WriteFile(opts.DigestFile, digestByteArray, 0644)
+		if err != nil {
+			return errors.Wrap(err, "writing digest to file failed")
+		}
+	}
+
 	destRefs := []name.Tag{}
 	for _, destination := range opts.Destinations {
 		destRef, err := name.NewTag(destination, name.WeakValidation)
@@ -70,29 +105,30 @@ func DoPush(image v1.Image, opts *config.KanikoOptions) error {
 		return tarball.MultiWriteToFile(opts.TarPath, tagToImage)
 	}
 
+	if opts.NoPush {
+		logrus.Info("Skipping push to container registry due to --no-push flag")
+		return nil
+	}
+
 	// continue pushing unless an error occurs
 	for _, destRef := range destRefs {
-		if opts.Insecure {
-			newReg, err := name.NewInsecureRegistry(destRef.Repository.Registry.Name(), name.WeakValidation)
+		registryName := destRef.Repository.Registry.Name()
+		if opts.Insecure || opts.InsecureRegistries.Contains(registryName) {
+			newReg, err := name.NewInsecureRegistry(registryName, name.WeakValidation)
 			if err != nil {
 				return errors.Wrap(err, "getting new insecure registry")
 			}
 			destRef.Repository.Registry = newReg
 		}
 
-		k8sc, err := k8schain.NewNoClient()
-		if err != nil {
-			return errors.Wrap(err, "getting k8schain client")
-		}
-		kc := authn.NewMultiKeychain(authn.DefaultKeychain, k8sc)
-		pushAuth, err := kc.Resolve(destRef.Context().Registry)
+		pushAuth, err := creds.GetKeychain().Resolve(destRef.Context().Registry)
 		if err != nil {
 			return errors.Wrap(err, "resolving pushAuth")
 		}
 
 		// Create a transport to set our user-agent.
 		tr := http.DefaultTransport
-		if opts.SkipTLSVerify {
+		if opts.SkipTLSVerify || opts.SkipTLSVerifyRegistries.Contains(registryName) {
 			tr.(*http.Transport).TLSClientConfig = &tls.Config{
 				InsecureSkipVerify: true,
 			}
@@ -103,6 +139,7 @@ func DoPush(image v1.Image, opts *config.KanikoOptions) error {
 			return errors.Wrap(err, fmt.Sprintf("failed to push to destination %s", destRef))
 		}
 	}
+	timing.DefaultRun.Stop(t)
 	return nil
 }
 
@@ -137,6 +174,10 @@ func pushLayerToCache(opts *config.KanikoOptions, cacheKey string, tarPath strin
 		return errors.Wrap(err, "appending layer onto empty image")
 	}
 	cacheOpts := *opts
+	cacheOpts.TarPath = ""   // tarPath doesn't make sense for Docker layers
+	cacheOpts.NoPush = false // we want to push cached layers
 	cacheOpts.Destinations = []string{cache}
+	cacheOpts.InsecureRegistries = opts.InsecureRegistries
+	cacheOpts.SkipTLSVerifyRegistries = opts.SkipTLSVerifyRegistries
 	return DoPush(empty, &cacheOpts)
 }
