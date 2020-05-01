@@ -20,8 +20,15 @@ import (
 	"time"
 )
 
+// CacheOptions are base image cache options that are set by command line arguments
+type CacheOptions struct {
+	CacheDir string
+	CacheTTL time.Duration
+}
+
 // KanikoOptions are options that are set by command line arguments
 type KanikoOptions struct {
+	CacheOptions
 	DockerfilePath          string
 	SrcContext              string
 	SnapshotMode            string
@@ -29,10 +36,16 @@ type KanikoOptions struct {
 	TarPath                 string
 	Target                  string
 	CacheRepo               string
-	CacheDir                string
 	DigestFile              string
+	ImageNameDigestFile     string
+	OCILayoutPath           string
+	RegistryMirror          string
 	Destinations            multiArg
 	BuildArgs               multiArg
+	InsecureRegistries      multiArg
+	Labels                  multiArg
+	SkipTLSVerifyRegistries multiArg
+	RegistriesCertificates  keyValueArg
 	Insecure                bool
 	SkipTLSVerify           bool
 	InsecurePull            bool
@@ -42,13 +55,12 @@ type KanikoOptions struct {
 	NoPush                  bool
 	Cache                   bool
 	Cleanup                 bool
-	CacheTTL                time.Duration
-	InsecureRegistries      multiArg
-	SkipTLSVerifyRegistries multiArg
+	WhitelistVarRun         bool
 }
 
 // WarmerOptions are options that are set by command line arguments to the cache warmer.
 type WarmerOptions struct {
-	Images   multiArg
-	CacheDir string
+	CacheOptions
+	Images multiArg
+	Force  bool
 }

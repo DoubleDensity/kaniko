@@ -17,8 +17,11 @@ limitations under the License.
 package util
 
 import (
+	"fmt"
+	"os/user"
 	"reflect"
 	"sort"
+	"strconv"
 	"testing"
 
 	"github.com/GoogleContainerTools/kaniko/testutil"
@@ -97,6 +100,22 @@ var testEnvReplacement = []struct {
 		},
 		expectedPath: "8080/udp",
 	},
+	{
+		path: "$url",
+		envs: []string{
+			"url=http://example.com",
+		},
+		isFilepath:   true,
+		expectedPath: "http://example.com",
+	},
+	{
+		path: "$url",
+		envs: []string{
+			"url=http://example.com",
+		},
+		isFilepath:   false,
+		expectedPath: "http://example.com",
+	},
 }
 
 func Test_EnvReplacement(t *testing.T) {
@@ -137,13 +156,13 @@ var destinationFilepathTests = []struct {
 		src:              "context/bar/",
 		cwd:              "/",
 		dest:             "pkg/",
-		expectedFilepath: "/pkg/bar",
+		expectedFilepath: "/pkg/",
 	},
 	{
 		src:              "context/bar/",
 		cwd:              "/newdir",
 		dest:             "pkg/",
-		expectedFilepath: "/newdir/pkg/bar",
+		expectedFilepath: "/newdir/pkg/",
 	},
 	{
 		src:              "./context/empty",
@@ -161,7 +180,7 @@ var destinationFilepathTests = []struct {
 		src:              "./",
 		cwd:              "/",
 		dest:             "/dir",
-		expectedFilepath: "/dir",
+		expectedFilepath: "/dir/",
 	},
 	{
 		src:              "context/foo",
@@ -390,7 +409,7 @@ var isSrcValidTests = []struct {
 func Test_IsSrcsValid(t *testing.T) {
 	for _, test := range isSrcValidTests {
 		t.Run(test.name, func(t *testing.T) {
-			if err := GetExcludedFiles(buildContextPath); err != nil {
+			if err := GetExcludedFiles("", buildContextPath); err != nil {
 				t.Fatalf("error getting excluded files: %v", err)
 			}
 			err := IsSrcsValid(test.srcsAndDest, test.resolvedSources, buildContextPath)
@@ -456,6 +475,58 @@ func Test_RemoteUrls(t *testing.T) {
 
 }
 
+func TestGetUserGroup(t *testing.T) {
+	tests := []struct {
+		description string
+		chown       string
+		env         []string
+		mock        func(string, bool) (uint32, uint32, error)
+		expectedU   int64
+		expectedG   int64
+		shdErr      bool
+	}{
+		{
+			description: "non empty chown",
+			chown:       "some:some",
+			env:         []string{},
+			mock:        func(string, bool) (uint32, uint32, error) { return 100, 1000, nil },
+			expectedU:   100,
+			expectedG:   1000,
+		},
+		{
+			description: "non empty chown with env replacement",
+			chown:       "some:$foo",
+			env:         []string{"foo=key"},
+			mock: func(c string, t bool) (uint32, uint32, error) {
+				if c == "some:key" {
+					return 10, 100, nil
+				}
+				return 0, 0, fmt.Errorf("did not resolve environment variable")
+			},
+			expectedU: 10,
+			expectedG: 100,
+		},
+		{
+			description: "empty chown string",
+			mock: func(c string, t bool) (uint32, uint32, error) {
+				return 0, 0, fmt.Errorf("should not be called")
+			},
+			expectedU: -1,
+			expectedG: -1,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.description, func(t *testing.T) {
+			original := getUIDAndGID
+			defer func() { getUIDAndGID = original }()
+			getUIDAndGID = tc.mock
+			uid, gid, err := GetUserGroup(tc.chown, tc.env)
+			testutil.CheckErrorAndDeepEqual(t, tc.shdErr, err, uid, tc.expectedU)
+			testutil.CheckErrorAndDeepEqual(t, tc.shdErr, err, gid, tc.expectedG)
+		})
+	}
+}
+
 func TestResolveEnvironmentReplacementList(t *testing.T) {
 	type args struct {
 		values     []string
@@ -472,14 +543,15 @@ func TestResolveEnvironmentReplacementList(t *testing.T) {
 			name: "url",
 			args: args{
 				values: []string{
-					"https://google.com/$foo", "$bar",
+					"https://google.com/$foo", "$bar", "$url",
 				},
 				envs: []string{
 					"foo=baz",
 					"bar=bat",
+					"url=https://google.com",
 				},
 			},
-			want: []string{"https://google.com/baz", "bat"},
+			want: []string{"https://google.com/baz", "bat", "https://google.com"},
 		},
 		{
 			name: "mixed",
@@ -507,5 +579,37 @@ func TestResolveEnvironmentReplacementList(t *testing.T) {
 				t.Errorf("ResolveEnvironmentReplacementList() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func Test_GetUIDAndGIDFromString(t *testing.T) {
+	currentUser, err := user.Current()
+	if err != nil {
+		t.Fatalf("Cannot get current user: %s", err)
+	}
+	groups, err := currentUser.GroupIds()
+	if err != nil || len(groups) == 0 {
+		t.Fatalf("Cannot get groups for current user: %s", err)
+	}
+	primaryGroupObj, err := user.LookupGroupId(groups[0])
+	if err != nil {
+		t.Fatalf("Could not lookup name of group %s: %s", groups[0], err)
+	}
+	primaryGroup := primaryGroupObj.Name
+
+	testCases := []string{
+		fmt.Sprintf("%s:%s", currentUser.Uid, currentUser.Gid),
+		fmt.Sprintf("%s:%s", currentUser.Username, currentUser.Gid),
+		fmt.Sprintf("%s:%s", currentUser.Uid, primaryGroup),
+		fmt.Sprintf("%s:%s", currentUser.Username, primaryGroup),
+	}
+	expectedU, _ := strconv.ParseUint(currentUser.Uid, 10, 32)
+	expectedG, _ := strconv.ParseUint(currentUser.Gid, 10, 32)
+	for _, tt := range testCases {
+		uid, gid, err := GetUIDAndGIDFromString(tt, false)
+		if uid != uint32(expectedU) || gid != uint32(expectedG) || err != nil {
+			t.Errorf("Could not correctly decode %s to uid/gid %d:%d. Result: %d:%d", tt, expectedU, expectedG,
+				uid, gid)
+		}
 	}
 }
