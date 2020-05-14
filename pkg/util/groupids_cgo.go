@@ -1,3 +1,6 @@
+// +build linux darwin
+// +build cgo
+
 /*
 Copyright 2020 Google LLC
 
@@ -14,19 +17,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package commands
+package util
 
 import (
-	"testing"
+	"os/user"
 )
 
-func Test_caching(t *testing.T) {
-	c := caching{layer: fakeLayer{}}
-
-	actual := c.Layer().(fakeLayer)
-	expected := fakeLayer{}
-	actualLen, expectedLen := len(actual.TarContent), len(expected.TarContent)
-	if actualLen != expectedLen {
-		t.Errorf("expected layer tar content to be %v but was %v", expectedLen, actualLen)
-	}
+// groupIDs returns all of the group ID's a user is a member of
+func groupIDs(u *user.User) ([]string, error) {
+	return u.GroupIds()
 }

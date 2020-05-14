@@ -317,13 +317,13 @@ func (s *stageBuilder) build() error {
 		return errors.Wrap(err, "failed to check filesystem whitelist")
 	}
 
-	// Take initial snapshot
-	t := timing.Start("Initial FS snapshot")
-	if err := s.snapshotter.Init(); err != nil {
-		return err
+	initSnapshotTaken := false
+	if s.opts.SingleSnapshot {
+		if err := s.initSnapshotWithTimings(); err != nil {
+			return err
+		}
+		initSnapshotTaken = true
 	}
-
-	timing.DefaultRun.Stop(t)
 
 	cacheGroup := errgroup.Group{}
 	for index, command := range s.cmds {
@@ -339,12 +339,31 @@ func (s *stageBuilder) build() error {
 			return errors.Wrap(err, "failed to get files used from context")
 		}
 
-		*compositeKey, err = s.populateCompositeKey(command, files, *compositeKey, s.args, s.cf.Config.Env)
-		if err != nil {
-			return err
+		if s.opts.Cache {
+			*compositeKey, err = s.populateCompositeKey(command, files, *compositeKey, s.args, s.cf.Config.Env)
+			if err != nil && s.opts.Cache {
+				return err
+			}
 		}
 
 		logrus.Info(command.String())
+
+		isCacheCommand := func() bool {
+			switch command.(type) {
+			case commands.Cached:
+				return true
+			default:
+				return false
+			}
+		}()
+		if !initSnapshotTaken && !isCacheCommand && !command.ProvidesFilesToSnapshot() {
+			// Take initial snapshot if command does not expect to return
+			// a list of files.
+			if err := s.initSnapshotWithTimings(); err != nil {
+				return err
+			}
+			initSnapshotTaken = true
+		}
 
 		if err := command.ExecuteCommand(&s.cf.Config, s.args); err != nil {
 			return errors.Wrap(err, "failed to execute command")
@@ -352,20 +371,10 @@ func (s *stageBuilder) build() error {
 		files = command.FilesToSnapshot()
 		timing.DefaultRun.Stop(t)
 
-		if !s.shouldTakeSnapshot(index, files) {
+		if !s.shouldTakeSnapshot(index, files, command.ProvidesFilesToSnapshot()) {
 			continue
 		}
-
-		fn := func() bool {
-			switch v := command.(type) {
-			case commands.Cached:
-				return v.ReadSuccess()
-			default:
-				return false
-			}
-		}
-
-		if fn() {
+		if isCacheCommand {
 			v := command.(commands.Cached)
 			layer := v.Layer()
 			if err := s.saveLayerToImage(layer, command.String()); err != nil {
@@ -377,19 +386,21 @@ func (s *stageBuilder) build() error {
 				return errors.Wrap(err, "failed to take snapshot")
 			}
 
-			logrus.Debugf("build: composite key for command %v %v", command.String(), compositeKey)
-			ck, err := compositeKey.Hash()
-			if err != nil {
-				return errors.Wrap(err, "failed to hash composite key")
-			}
+			if s.opts.Cache {
+				logrus.Debugf("build: composite key for command %v %v", command.String(), compositeKey)
+				ck, err := compositeKey.Hash()
+				if err != nil {
+					return errors.Wrap(err, "failed to hash composite key")
+				}
 
-			logrus.Debugf("build: cache key for command %v %v", command.String(), ck)
+				logrus.Debugf("build: cache key for command %v %v", command.String(), ck)
 
-			// Push layer to cache (in parallel) now along with new config file
-			if s.opts.Cache && command.ShouldCacheOutput() {
-				cacheGroup.Go(func() error {
-					return s.pushLayerToCache(s.opts, ck, tarPath, command.String())
-				})
+				// Push layer to cache (in parallel) now along with new config file
+				if command.ShouldCacheOutput() {
+					cacheGroup.Go(func() error {
+						return s.pushLayerToCache(s.opts, ck, tarPath, command.String())
+					})
+				}
 			}
 			if err := s.saveSnapshotToImage(command.String(), tarPath); err != nil {
 				return errors.Wrap(err, "failed to save snapshot to image")
@@ -407,6 +418,7 @@ func (s *stageBuilder) build() error {
 func (s *stageBuilder) takeSnapshot(files []string) (string, error) {
 	var snapshot string
 	var err error
+
 	t := timing.Start("Snapshotting FS")
 	if files == nil || s.opts.SingleSnapshot {
 		snapshot, err = s.snapshotter.TakeSnapshotFS()
@@ -419,8 +431,8 @@ func (s *stageBuilder) takeSnapshot(files []string) (string, error) {
 	return snapshot, err
 }
 
-func (s *stageBuilder) shouldTakeSnapshot(index int, files []string) bool {
-	isLastCommand := index == len(s.stage.Commands)-1
+func (s *stageBuilder) shouldTakeSnapshot(index int, files []string, provideFiles bool) bool {
+	isLastCommand := index == len(s.cmds)-1
 
 	// We only snapshot the very end with single snapshot mode on.
 	if s.opts.SingleSnapshot {
@@ -432,8 +444,8 @@ func (s *stageBuilder) shouldTakeSnapshot(index int, files []string) bool {
 		return true
 	}
 
-	// nil means snapshot everything.
-	if files == nil {
+	// if command does not provide files, snapshot everything.
+	if !provideFiles {
 		return true
 	}
 
@@ -563,12 +575,12 @@ func DoBuild(opts *config.KanikoOptions) (v1.Image, error) {
 	if err != nil {
 		return nil, err
 	}
-	stageNameToIdx := ResolveCrossStageInstructions(stages)
 
 	kanikoStages, err := dockerfile.MakeKanikoStages(opts, stages, metaArgs)
 	if err != nil {
 		return nil, err
 	}
+	stageNameToIdx := ResolveCrossStageInstructions(kanikoStages)
 
 	if err := util.GetExcludedFiles(opts.DockerfilePath, opts.SrcContext); err != nil {
 		return nil, err
@@ -698,14 +710,23 @@ func filesToSave(deps []string) ([]string, error) {
 			srcFiles = append(srcFiles, f)
 		}
 	}
-	return srcFiles, nil
+	// remove duplicates
+	deduped := []string{}
+	m := map[string]struct{}{}
+	for _, f := range srcFiles {
+		if _, ok := m[f]; !ok {
+			deduped = append(deduped, f)
+			m[f] = struct{}{}
+		}
+	}
+	return deduped, nil
 }
 
 func fetchExtraStages(stages []config.KanikoStage, opts *config.KanikoOptions) error {
 	t := timing.Start("Fetching Extra Stages")
 	defer timing.DefaultRun.Stop(t)
 
-	var names = []string{}
+	var names []string
 
 	for stageIndex, s := range stages {
 		for _, cmd := range s.Commands {
@@ -722,11 +743,10 @@ func fetchExtraStages(stages []config.KanikoStage, opts *config.KanikoOptions) e
 				continue
 			}
 			// Check if the name is the alias of a previous stage
-			for _, name := range names {
-				if name == c.From {
-					continue
-				}
+			if fromPreviousStage(c, names) {
+				continue
 			}
+
 			// This must be an image name, fetch it.
 			logrus.Debugf("Found extra base image stage %s", c.From)
 			sourceImage, err := util.RetrieveRemoteImage(c.From, opts)
@@ -747,6 +767,16 @@ func fetchExtraStages(stages []config.KanikoStage, opts *config.KanikoOptions) e
 	}
 	return nil
 }
+
+func fromPreviousStage(copyCommand *instructions.CopyCommand, previousStageNames []string) bool {
+	for _, previousStageName := range previousStageNames {
+		if previousStageName == copyCommand.From {
+			return true
+		}
+	}
+	return false
+}
+
 func extractImageToDependencyDir(name string, image v1.Image) error {
 	t := timing.Start("Extracting Image to Dependency Dir")
 	defer timing.DefaultRun.Stop(t)
@@ -820,9 +850,9 @@ func reviewConfig(stage config.KanikoStage, config *v1.Config) {
 	}
 }
 
-// iterates over a list of stages and resolves instructions referring to earlier stages
+// iterates over a list of KanikoStage and resolves instructions referring to earlier stages
 // returns a mapping of stage name to stage id, f.e - ["first": "0", "second": "1", "target": "2"]
-func ResolveCrossStageInstructions(stages []instructions.Stage) map[string]string {
+func ResolveCrossStageInstructions(stages []config.KanikoStage) map[string]string {
 	nameToIndex := make(map[string]string)
 	for i, stage := range stages {
 		index := strconv.Itoa(i)
@@ -834,4 +864,13 @@ func ResolveCrossStageInstructions(stages []instructions.Stage) map[string]strin
 
 	logrus.Debugf("Built stage name to index map: %v", nameToIndex)
 	return nameToIndex
+}
+
+func (s stageBuilder) initSnapshotWithTimings() error {
+	t := timing.Start("Initial FS snapshot")
+	if err := s.snapshotter.Init(); err != nil {
+		return err
+	}
+	timing.DefaultRun.Stop(t)
+	return nil
 }

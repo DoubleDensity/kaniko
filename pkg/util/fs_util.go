@@ -161,15 +161,18 @@ func GetFSFromLayers(root string, layers []v1.Layer, opts ...FSOpt) ([]string, e
 			dir := filepath.Dir(path)
 
 			if strings.HasPrefix(base, ".wh.") {
-				if !cfg.includeWhiteout {
-					logrus.Debug("not including whiteout files")
-					continue
-				}
 				logrus.Debugf("Whiting out %s", path)
+
 				name := strings.TrimPrefix(base, ".wh.")
 				if err := os.RemoveAll(filepath.Join(dir, name)); err != nil {
 					return nil, errors.Wrapf(err, "removing whiteout %s", hdr.Name)
 				}
+
+				if !cfg.includeWhiteout {
+					logrus.Debug("not including whiteout files")
+					continue
+				}
+
 			}
 
 			if err := cfg.extractFunc(root, hdr, tr); err != nil {
@@ -468,10 +471,10 @@ func ParentDirectories(path string) []string {
 		}
 		dir, _ = filepath.Split(dir)
 		dir = filepath.Clean(dir)
-		paths = append(paths, dir)
+		paths = append([]string{dir}, paths...)
 	}
 	if len(paths) == 0 {
-		paths = append(paths, config.RootDir)
+		paths = []string{config.RootDir}
 	}
 	return paths
 }

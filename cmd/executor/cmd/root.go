@@ -39,17 +39,18 @@ import (
 )
 
 var (
-	opts       = &config.KanikoOptions{}
-	ctxSubPath string
-	force      bool
-	logLevel   string
-	logFormat  string
+	opts         = &config.KanikoOptions{}
+	ctxSubPath   string
+	force        bool
+	logLevel     string
+	logFormat    string
+	logTimestamp bool
 )
 
 func init() {
-	RootCmd.PersistentFlags().StringVarP(&logLevel, "verbosity", "v", logging.DefaultLevel, "Log level (debug, info, warn, error, fatal, panic")
+	RootCmd.PersistentFlags().StringVarP(&logLevel, "verbosity", "v", logging.DefaultLevel, "Log level (trace, debug, info, warn, error, fatal, panic)")
 	RootCmd.PersistentFlags().StringVar(&logFormat, "log-format", logging.FormatColor, "Log format (text, color, json)")
-
+	RootCmd.PersistentFlags().BoolVar(&logTimestamp, "log-timestamp", logging.DefaultLogTimestamp, "Timestamp in log output")
 	RootCmd.PersistentFlags().BoolVarP(&force, "force", "", false, "Force building outside of a container")
 
 	addKanikoOptionsFlags()
@@ -63,7 +64,7 @@ var RootCmd = &cobra.Command{
 		if cmd.Use == "executor" {
 			resolveEnvironmentBuildArgs(opts.BuildArgs, os.Getenv)
 
-			if err := logging.Configure(logLevel, logFormat); err != nil {
+			if err := logging.Configure(logLevel, logFormat, logTimestamp); err != nil {
 				return err
 			}
 
@@ -161,6 +162,7 @@ func addKanikoOptionsFlags() {
 	RootCmd.PersistentFlags().StringVarP(&opts.RegistryMirror, "registry-mirror", "", "", "Registry mirror to use has pull-through cache instead of docker.io.")
 	RootCmd.PersistentFlags().BoolVarP(&opts.WhitelistVarRun, "whitelist-var-run", "", true, "Ignore /var/run directory when taking image snapshot. Set it to false to preserve /var/run/ in destination image. (Default true).")
 	RootCmd.PersistentFlags().VarP(&opts.Labels, "label", "", "Set metadata for an image. Set it repeatedly for multiple labels.")
+	RootCmd.PersistentFlags().BoolVarP(&opts.SkipUnusedStages, "skip-unused-stages", "", false, "Build only used stages if defined to true. Otherwise it builds by default all stages, even the unnecessaries ones until it reaches the target stage / end of Dockerfile")
 }
 
 // addHiddenFlags marks certain flags as hidden from the executor help text

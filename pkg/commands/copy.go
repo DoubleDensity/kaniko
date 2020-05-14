@@ -189,8 +189,6 @@ func (cr *CachingCopyCommand) ExecuteCommand(config *v1.Config, buildArgs *docke
 	}
 
 	cr.layer = layers[0]
-	cr.readSuccess = true
-
 	cr.extractedFiles, err = util.GetFSFromLayers(kConfig.RootDir, layers, util.ExtractFunc(cr.extractFn), util.IncludeWhiteout())
 
 	logrus.Debugf("extractedFiles: %s", cr.extractedFiles)
@@ -207,9 +205,14 @@ func (cr *CachingCopyCommand) FilesUsedFromContext(config *v1.Config, buildArgs 
 
 func (cr *CachingCopyCommand) FilesToSnapshot() []string {
 	f := cr.extractedFiles
-	logrus.Debugf("files extracted by caching copy command %s", f)
+	logrus.Debugf("%d files extracted by caching copy command", len(f))
+	logrus.Tracef("Extracted files: %s", f)
 
 	return f
+}
+
+func (cr *CachingCopyCommand) MetadataOnly() bool {
+	return false
 }
 
 func (cr *CachingCopyCommand) String() string {

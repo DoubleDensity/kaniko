@@ -1,5 +1,5 @@
 /*
-Copyright 2020 Google LLC
+Copyright 2018 Google LLC
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,19 +14,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package commands
+package util
 
 import (
+	"bufio"
+	"bytes"
 	"testing"
+
+	"github.com/GoogleContainerTools/kaniko/testutil"
 )
 
-func Test_caching(t *testing.T) {
-	c := caching{layer: fakeLayer{}}
-
-	actual := c.Layer().(fakeLayer)
-	expected := fakeLayer{}
-	actualLen, expectedLen := len(actual.TarContent), len(expected.TarContent)
-	if actualLen != expectedLen {
-		t.Errorf("expected layer tar content to be %v but was %v", expectedLen, actualLen)
-	}
+func TestGetInputFrom(t *testing.T) {
+	validInput := []byte("Valid\n")
+	validReader := bufio.NewReader(bytes.NewReader((validInput)))
+	validValue, err := GetInputFrom(validReader)
+	testutil.CheckErrorAndDeepEqual(t, false, err, validInput, validValue)
 }

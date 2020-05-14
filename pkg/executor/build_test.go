@@ -90,32 +90,22 @@ func stage(t *testing.T, d string) config.KanikoStage {
 	}
 }
 
-type MockCommand struct {
-	name string
-}
-
-func (m *MockCommand) Name() string {
-	return m.name
-}
-
 func Test_stageBuilder_shouldTakeSnapshot(t *testing.T) {
-	commands := []instructions.Command{
-		&MockCommand{name: "command1"},
-		&MockCommand{name: "command2"},
-		&MockCommand{name: "command3"},
-	}
-
-	stage := instructions.Stage{
-		Commands: commands,
+	cmds := []commands.DockerCommand{
+		&MockDockerCommand{command: "command1"},
+		&MockDockerCommand{command: "command2"},
+		&MockDockerCommand{command: "command3"},
 	}
 
 	type fields struct {
 		stage config.KanikoStage
 		opts  *config.KanikoOptions
+		cmds  []commands.DockerCommand
 	}
 	type args struct {
-		index int
-		files []string
+		index    int
+		files    []string
+		hasFiles bool
 	}
 	tests := []struct {
 		name   string
@@ -128,8 +118,8 @@ func Test_stageBuilder_shouldTakeSnapshot(t *testing.T) {
 			fields: fields{
 				stage: config.KanikoStage{
 					Final: true,
-					Stage: stage,
 				},
+				cmds: cmds,
 			},
 			args: args{
 				index: 1,
@@ -141,11 +131,11 @@ func Test_stageBuilder_shouldTakeSnapshot(t *testing.T) {
 			fields: fields{
 				stage: config.KanikoStage{
 					Final: false,
-					Stage: stage,
 				},
+				cmds: cmds,
 			},
 			args: args{
-				index: len(commands) - 1,
+				index: len(cmds) - 1,
 			},
 			want: true,
 		},
@@ -154,11 +144,37 @@ func Test_stageBuilder_shouldTakeSnapshot(t *testing.T) {
 			fields: fields{
 				stage: config.KanikoStage{
 					Final: false,
-					Stage: stage,
 				},
+				cmds: cmds,
 			},
 			args: args{
 				index: 0,
+			},
+			want: true,
+		},
+		{
+			name: "not final stage not last command but empty list of files",
+			fields: fields{
+				stage: config.KanikoStage{},
+			},
+			args: args{
+				index:    0,
+				files:    []string{},
+				hasFiles: true,
+			},
+			want: false,
+		},
+		{
+			name: "not final stage not last command no files provided",
+			fields: fields{
+				stage: config.KanikoStage{
+					Final: false,
+				},
+			},
+			args: args{
+				index:    0,
+				files:    nil,
+				hasFiles: false,
 			},
 			want: true,
 		},
@@ -167,9 +183,9 @@ func Test_stageBuilder_shouldTakeSnapshot(t *testing.T) {
 			fields: fields{
 				stage: config.KanikoStage{
 					Final: false,
-					Stage: stage,
 				},
 				opts: &config.KanikoOptions{Cache: true},
+				cmds: cmds,
 			},
 			args: args{
 				index: 0,
@@ -186,8 +202,9 @@ func Test_stageBuilder_shouldTakeSnapshot(t *testing.T) {
 			s := &stageBuilder{
 				stage: tt.fields.stage,
 				opts:  tt.fields.opts,
+				cmds:  tt.fields.cmds,
 			}
-			if got := s.shouldTakeSnapshot(tt.args.index, tt.args.files); got != tt.want {
+			if got := s.shouldTakeSnapshot(tt.args.index, tt.args.files, tt.args.hasFiles); got != tt.want {
 				t.Errorf("stageBuilder.shouldTakeSnapshot() = %v, want %v", got, tt.want)
 			}
 		})
@@ -362,11 +379,11 @@ COPY --from=second /bar /bat
 				t.Errorf("Failed to parse test dockerfile to stages: %s", err)
 			}
 
-			stageNameToIdx := ResolveCrossStageInstructions(testStages)
 			kanikoStages, err := dockerfile.MakeKanikoStages(opts, testStages, metaArgs)
 			if err != nil {
 				t.Errorf("Failed to parse stages to Kaniko Stages: %s", err)
 			}
+			stageNameToIdx := ResolveCrossStageInstructions(kanikoStages)
 
 			got, err := CalculateDependencies(kanikoStages, opts, stageNameToIdx)
 			if err != nil {
@@ -916,11 +933,12 @@ COPY %s bar.txt
 			if err != nil {
 				t.Errorf("Failed to parse test dockerfile to stages: %s", err)
 			}
-			_ = ResolveCrossStageInstructions(testStages)
+
 			kanikoStages, err := dockerfile.MakeKanikoStages(opts, testStages, metaArgs)
 			if err != nil {
 				t.Errorf("Failed to parse stages to Kaniko Stages: %s", err)
 			}
+			_ = ResolveCrossStageInstructions(kanikoStages)
 			stage := kanikoStages[0]
 
 			cmds := stage.Commands
@@ -991,11 +1009,12 @@ COPY %s bar.txt
 			if err != nil {
 				t.Errorf("Failed to parse test dockerfile to stages: %s", err)
 			}
-			_ = ResolveCrossStageInstructions(testStages)
+
 			kanikoStages, err := dockerfile.MakeKanikoStages(opts, testStages, metaArgs)
 			if err != nil {
 				t.Errorf("Failed to parse stages to Kaniko Stages: %s", err)
 			}
+			_ = ResolveCrossStageInstructions(kanikoStages)
 
 			stage := kanikoStages[0]
 
@@ -1316,11 +1335,16 @@ func Test_ResolveCrossStageInstructions(t *testing.T) {
 	COPY --from=third /hi3 /hi4
 	COPY --from=2 /hi3 /hi4
 	`
-	stages, _, err := dockerfile.Parse([]byte(df))
+	stages, metaArgs, err := dockerfile.Parse([]byte(df))
 	if err != nil {
 		t.Fatal(err)
 	}
-	stageToIdx := ResolveCrossStageInstructions(stages)
+	opts := &config.KanikoOptions{}
+	kanikoStages, err := dockerfile.MakeKanikoStages(opts, stages, metaArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stageToIdx := ResolveCrossStageInstructions(kanikoStages)
 	for index, stage := range stages {
 		if index == 0 {
 			continue

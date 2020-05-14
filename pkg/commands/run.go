@@ -80,11 +80,10 @@ func (r *RunCommand) ExecuteCommand(config *v1.Config, buildArgs *dockerfile.Bui
 
 	// If specified, run the command as a specific user
 	if userStr != "" {
-		uid, gid, err := util.GetUIDAndGIDFromString(userStr, true)
+		cmd.SysProcAttr.Credential, err = util.SyscallCredentials(userStr)
 		if err != nil {
-			return err
+			return errors.Wrap(err, "credentials")
 		}
-		cmd.SysProcAttr.Credential = &syscall.Credential{Uid: uid, Gid: gid}
 	}
 
 	env, err := addDefaultHOME(userStr, replacementEnvs)
@@ -94,6 +93,7 @@ func (r *RunCommand) ExecuteCommand(config *v1.Config, buildArgs *dockerfile.Bui
 
 	cmd.Env = env
 
+	logrus.Infof("Running: %s", cmd.Args)
 	if err := cmd.Start(); err != nil {
 		return errors.Wrap(err, "starting command")
 	}
@@ -151,6 +151,10 @@ func (r *RunCommand) FilesToSnapshot() []string {
 	return nil
 }
 
+func (r *RunCommand) ProvidesFilesToSnapshot() bool {
+	return false
+}
+
 // CacheCommand returns true since this command should be cached
 func (r *RunCommand) CacheCommand(img v1.Image) DockerCommand {
 
@@ -200,7 +204,6 @@ func (cr *CachingRunCommand) ExecuteCommand(config *v1.Config, buildArgs *docker
 	}
 
 	cr.layer = layers[0]
-	cr.readSuccess = true
 
 	cr.extractedFiles, err = util.GetFSFromLayers(
 		kConfig.RootDir,
@@ -217,7 +220,8 @@ func (cr *CachingRunCommand) ExecuteCommand(config *v1.Config, buildArgs *docker
 
 func (cr *CachingRunCommand) FilesToSnapshot() []string {
 	f := cr.extractedFiles
-	logrus.Debugf("files extracted from caching run command %s", f)
+	logrus.Debugf("%d files extracted by caching run command", len(f))
+	logrus.Tracef("Extracted files: %s", f)
 
 	return f
 }
@@ -227,4 +231,8 @@ func (cr *CachingRunCommand) String() string {
 		return "nil command"
 	}
 	return cr.cmd.String()
+}
+
+func (cr *CachingRunCommand) MetadataOnly() bool {
+	return false
 }
